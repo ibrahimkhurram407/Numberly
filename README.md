@@ -1,5 +1,5 @@
 
-  # Mumberly app
+  # Learning app 
 
   This is a project app made for austistic kids to learn maths.
 
