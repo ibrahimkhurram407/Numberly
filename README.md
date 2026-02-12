@@ -1,7 +1,7 @@
 
-  # Home Screen Design
+  # Mumberly app
 
-  This is a code bundle for Home Screen Design. The original project is available at https://www.figma.com/design/FOGLnWL4TDKsiKyJ75MrOR/Home-Screen-Design.
+  This is a project app made for austistic kids to learn maths.
 
   ## Running the code
 
