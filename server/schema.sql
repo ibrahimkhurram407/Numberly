@@ -1,0 +1,82 @@
+CREATE TABLE IF NOT EXISTS users (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  display_name VARCHAR(80) NOT NULL,
+  email VARCHAR(190) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NOT NULL,
+  avatar_color VARCHAR(20) NOT NULL DEFAULT '#0ea5e9',
+  age_group VARCHAR(40) NOT NULL DEFAULT '5-7',
+  total_xp INT NOT NULL DEFAULT 0,
+  streak_days INT NOT NULL DEFAULT 1,
+  last_lesson_on DATE NULL,
+  hearts INT NOT NULL DEFAULT 5,
+  daily_goal INT NOT NULL DEFAULT 5,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user_settings (
+  user_id INT PRIMARY KEY,
+  sound_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  high_contrast BOOLEAN NOT NULL DEFAULT FALSE,
+  routine_mode BOOLEAN NOT NULL DEFAULT TRUE,
+  preferred_voice VARCHAR(40) NOT NULL DEFAULT 'gentle',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_user_settings_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS level_progress (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  level_id VARCHAR(80) NOT NULL,
+  best_score INT NOT NULL DEFAULT 0,
+  stars_earned INT NOT NULL DEFAULT 0,
+  times_completed INT NOT NULL DEFAULT 0,
+  last_accuracy DECIMAL(5,2) NOT NULL DEFAULT 0,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_level_progress_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT uq_user_level UNIQUE (user_id, level_id)
+);
+
+CREATE TABLE IF NOT EXISTS game_sessions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  level_id VARCHAR(80) NOT NULL,
+  correct_answers INT NOT NULL DEFAULT 0,
+  total_questions INT NOT NULL DEFAULT 0,
+  xp_earned INT NOT NULL DEFAULT 0,
+  hearts_left INT NOT NULL DEFAULT 5,
+  completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_game_sessions_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS media_assets (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  title VARCHAR(120) NOT NULL,
+  object_name VARCHAR(120) NOT NULL,
+  image_path VARCHAR(255) NOT NULL,
+  source_type VARCHAR(30) NOT NULL DEFAULT 'manual',
+  manual_tags JSON NULL,
+  vision_labels JSON NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS question_templates (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  asset_id INT NULL,
+  level_id VARCHAR(80) NOT NULL,
+  title VARCHAR(120) NOT NULL,
+  difficulty VARCHAR(20) NOT NULL DEFAULT 'easy',
+  source_type VARCHAR(20) NOT NULL DEFAULT 'manual',
+  review_status VARCHAR(20) NOT NULL DEFAULT 'approved',
+  prompt TEXT NOT NULL,
+  narration TEXT NOT NULL,
+  choices JSON NOT NULL,
+  answer VARCHAR(255) NOT NULL,
+  visual_type VARCHAR(80) NOT NULL,
+  template_payload JSON NULL,
+  tags JSON NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT fk_question_templates_asset FOREIGN KEY (asset_id) REFERENCES media_assets(id) ON DELETE SET NULL
+);

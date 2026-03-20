@@ -1,108 +1,92 @@
 import React from 'react';
+import { Check, Lock, Play } from 'lucide-react';
 import { motion } from 'motion/react';
-import { Star, Check, Play, Lock, BookOpen } from 'lucide-react';
-import { cn } from '../../lib/utils';
 
-interface NodeProps {
-  status: 'completed' | 'current' | 'locked';
-  index: number;
-  label: string;
+import { cn } from '../../lib/utils';
+import type { Level, UserProfile } from '../types';
+
+interface LessonPathProps {
+  levels: Level[];
+  user: UserProfile;
+  onStartLesson: (level: Level) => void;
 }
 
-const PathNode = ({ status, index, label }: NodeProps) => {
-  const isLeft = index % 2 === 0;
-  const isCenter = index % 3 === 0;
-  
-  // Calculate horizontal offset
-  const xOffset = isCenter ? 0 : (isLeft ? -40 : 40);
+function accentClasses(accent: string) {
+  switch (accent) {
+    case 'emerald':
+      return 'bg-emerald-500';
+    case 'orange':
+      return 'bg-orange-500';
+    case 'violet':
+      return 'bg-violet-500';
+    case 'sky':
+    default:
+      return 'bg-sky-500';
+  }
+}
+
+export const LessonPath = ({ levels, user, onStartLesson }: LessonPathProps) => {
+  const completedLevelIds = new Set(user.progress.filter((entry) => entry.timesCompleted > 0).map((entry) => entry.levelId));
 
   return (
-    <div 
-      className="relative flex flex-col items-center my-6 group"
-      style={{ transform: `translateX(${xOffset}px)` }}
-    >
-      <motion.button
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        className={cn(
-          "w-16 h-16 rounded-3xl flex items-center justify-center relative shadow-[0_6px_0_0_rgba(0,0,0,0.1)] transition-all cursor-pointer z-10",
-          status === 'completed' && "bg-sky-400 border-b-4 border-sky-600 text-white",
-          status === 'current' && "bg-emerald-400 border-b-4 border-emerald-600 text-white",
-          status === 'locked' && "bg-slate-200 border-b-4 border-slate-300 text-slate-400"
-        )}
-      >
-        {status === 'completed' && <Check size={28} strokeWidth={3} />}
-        {status === 'current' && <Play size={28} fill="white" />}
-        {status === 'locked' && <Lock size={24} />}
-        
-        {status === 'current' && (
-          <motion.div 
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="absolute -top-12 bg-emerald-500 text-white px-3 py-1 rounded-lg font-bold text-sm whitespace-nowrap shadow-lg after:content-[''] after:absolute after:top-full after:left-1/2 after:-ml-2 after:border-8 after:border-transparent after:border-t-emerald-500"
-          >
-            START
-          </motion.div>
-        )}
-      </motion.button>
-      <span className="mt-3 font-bold text-slate-500 uppercase text-xs tracking-wider">{label}</span>
-    </div>
-  );
-};
+    <div className="flex-1 overflow-y-auto px-4 pb-32 pt-28 lg:px-8">
+      <div className="mx-auto max-w-4xl">
+        <section className="rounded-[2rem] border-2 border-slate-100 bg-[linear-gradient(135deg,#f0f9ff_0%,#ffffff_45%,#fefce8_100%)] p-8 shadow-[0_16px_40px_rgba(15,23,42,0.05)]">
+          <p className="text-sm font-black uppercase tracking-[0.2em] text-sky-500">Lesson journey</p>
+          <h1 className="mt-3 text-4xl font-black tracking-tight text-slate-900">Emotion, routine, social, and number practice</h1>
+          <p className="mt-3 max-w-2xl font-semibold text-slate-500">
+            Lessons now focus on areas many autistic children benefit from practicing: recognising emotions, following routines, understanding kind choices, and building early maths confidence.
+          </p>
+        </section>
 
-export const UnitSection = ({ unitNumber, title, description, color }: { unitNumber: number, title: string, description: string, color: string }) => {
-  return (
-    <div className="w-full max-w-lg mx-auto mb-12">
-      <div className={cn("p-6 rounded-2xl mb-12 text-white shadow-lg", color)}>
-        <div className="flex justify-between items-start mb-2">
-          <h2 className="text-xl font-black uppercase tracking-tight">Unit {unitNumber}</h2>
-          <BookOpen className="opacity-50" size={24} />
+        <div className="mt-8 grid gap-6">
+          {levels.map((level, index) => {
+            const isCompleted = completedLevelIds.has(level.id);
+            const isUnlocked = index === 0 || completedLevelIds.has(levels[index - 1].id);
+
+            return (
+              <motion.div
+                key={level.id}
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: index * 0.05 }}
+                className="rounded-[2rem] border-2 border-slate-100 bg-white p-6 shadow-[0_16px_40px_rgba(15,23,42,0.05)]"
+              >
+                <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex items-start gap-4">
+                    <div className={cn('flex h-16 w-16 items-center justify-center rounded-[1.5rem] text-white shadow-[0_8px_0_0_rgba(15,23,42,0.12)]', accentClasses(level.accent))}>
+                      {isCompleted ? <Check size={28} /> : isUnlocked ? <Play size={28} fill="currentColor" /> : <Lock size={26} />}
+                    </div>
+
+                    <div>
+                      <p className="text-sm font-black uppercase tracking-[0.18em] text-slate-400">{level.unit}</p>
+                      <h2 className="mt-1 text-3xl font-black tracking-tight text-slate-900">{level.title}</h2>
+                      <p className="mt-2 max-w-2xl font-semibold text-slate-500">{level.description}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="rounded-full bg-slate-100 px-4 py-2 text-sm font-black uppercase tracking-[0.18em] text-slate-500">
+                      {level.lessonType}
+                    </span>
+                    <button
+                      disabled={!isUnlocked}
+                      onClick={() => onStartLesson(level)}
+                      className={cn(
+                        'rounded-3xl px-6 py-4 font-black shadow-[0_8px_0_0_rgba(15,23,42,0.12)] transition',
+                        isUnlocked
+                          ? 'bg-slate-900 text-white hover:bg-slate-800'
+                          : 'cursor-not-allowed bg-slate-200 text-slate-400 shadow-none',
+                      )}
+                    >
+                      {isCompleted ? 'Play Again' : isUnlocked ? 'Start Lesson' : 'Locked'}
+                    </button>
+                  </div>
+                </div>
+              </motion.div>
+            );
+          })}
         </div>
-        <h3 className="text-2xl font-bold mb-1">{title}</h3>
-        <p className="opacity-90 font-medium">{description}</p>
-      </div>
-
-      <div className="flex flex-col items-center">
-        <PathNode status="completed" index={0} label="Shapes" />
-        <PathNode status="completed" index={1} label="Matching" />
-        <PathNode status="current" index={2} label="Counting 1-5" />
-        <PathNode status="locked" index={3} label="Patterns" />
-        <PathNode status="locked" index={4} label="Logic" />
-      </div>
-    </div>
-  );
-};
-
-export const LessonPath = () => {
-  return (
-    <div className="flex-1 overflow-y-auto pt-24 pb-32 px-4 scroll-smooth">
-      <div className="max-w-4xl mx-auto flex flex-col items-center">
-        {/* Mascot Speech Bubble for Mobile/Small tablets */}
-        <div className="xl:hidden w-full max-w-lg mb-8 flex items-center gap-4 bg-white border-2 border-slate-200 p-4 rounded-2xl">
-           <div className="w-12 h-12 bg-slate-100 rounded-full shrink-0 overflow-hidden">
-                <img src="https://images.unsplash.com/photo-1703668929798-67cab2e41f6b?auto=format&fit=crop&q=80&w=100" alt="Mascot" className="w-full h-full object-cover" />
-           </div>
-           <p className="font-bold text-slate-600 text-sm">Keep up the momentum! You're doing amazing.</p>
-        </div>
-
-        <UnitSection 
-          unitNumber={1} 
-          title="Foundation" 
-          description="Numbers and Basic Shapes" 
-          color="bg-sky-500"
-        />
-        <UnitSection 
-          unitNumber={2} 
-          title="Logic & Order" 
-          description="Understanding sequences and grouping" 
-          color="bg-emerald-500"
-        />
-        <UnitSection 
-          unitNumber={3} 
-          title="Patterns" 
-          description="Recognizing repeating sequences" 
-          color="bg-orange-500"
-        />
       </div>
     </div>
   );

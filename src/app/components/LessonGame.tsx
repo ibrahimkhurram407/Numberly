@@ -1,138 +1,239 @@
-import React, { useState } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { X, Heart, CheckCircle2, XCircle, Volume2 } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import { CheckCircle2, Heart, Volume2, X, XCircle } from 'lucide-react';
+
+import { fetchQuestions, submitLesson } from '../api';
 import { cn } from '../../lib/utils';
-import { ImageWithFallback } from './figma/ImageWithFallback';
+import type { Level, Question, UserProfile } from '../types';
 
 interface LessonGameProps {
+  level: Level;
+  user: UserProfile;
   onExit: () => void;
+  onLessonComplete: (user: UserProfile) => void;
 }
 
-const APPLE_IMAGE = "https://images.unsplash.com/photo-1716802043669-8aabd339dc00?auto=format&fit=crop&q=80&w=200";
-
-export const LessonGame = ({ onExit }: LessonGameProps) => {
+export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGameProps) => {
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState<number | null>(null);
-  const [status, setStatus] = useState<'idle' | 'checking' | 'correct' | 'wrong'>('idle');
-  const [progress, setProgress] = useState(30);
+  const [status, setStatus] = useState<'idle' | 'correct' | 'wrong' | 'complete'>('idle');
+  const [correctAnswers, setCorrectAnswers] = useState(0);
+  const [heartsLeft, setHeartsLeft] = useState(user.hearts || 5);
+  const [summary, setSummary] = useState<{ xpEarned: number; starsEarned: number; accuracy: number } | null>(null);
 
-  const options = [2, 3, 4, 5];
-  const correctAnswer = 3;
+  const audioBasePath = `/audio/${user.settings.preferredVoice}`;
 
-  const handleCheck = () => {
-    if (selectedOption === null) return;
-    
-    if (selectedOption === correctAnswer) {
-      setStatus('correct');
-      // In a real app, we'd play a sound and move to next after a delay
-    } else {
-      setStatus('wrong');
+  useEffect(() => {
+    fetchQuestions(level.id, 5)
+      .then((response) => setQuestions(response.questions))
+      .catch(() => setQuestions([]));
+  }, [level.id]);
+
+  const question = questions[currentIndex];
+  const progress = questions.length ? ((currentIndex + (status === 'complete' ? 1 : 0)) / questions.length) * 100 : 0;
+
+  const visuals = useMemo(() => {
+    if (!question) {
+      return null;
+    }
+    if (question.visualItems) {
+      return (
+        <div className="flex flex-wrap justify-center gap-4">
+          {question.visualItems.map((item, index) => (
+            <motion.div
+              key={`${item}-${index}`}
+              initial={{ opacity: 0, scale: 0.7 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="flex h-24 w-24 items-center justify-center rounded-[1.8rem] bg-white text-5xl shadow-[0_10px_30px_rgba(15,23,42,0.08)]"
+            >
+              {question.assetKind === 'image' ? (
+                <img src={item} alt={question.assetObjectName ?? 'Lesson object'} className="h-20 w-20 rounded-2xl object-cover" />
+              ) : (
+                item
+              )}
+            </motion.div>
+          ))}
+        </div>
+      );
+    }
+
+    if (question.visualGroups) {
+      return (
+        <div className="flex flex-wrap items-center justify-center gap-6">
+          {question.visualGroups.map((group, index) => (
+            <div key={index} className="rounded-[1.8rem] bg-white px-6 py-4 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
+              <div className="flex gap-3 text-4xl">
+                {group.map((item, itemIndex) => (
+                  question.assetKind === 'image' ? (
+                    <img key={`${item}-${itemIndex}`} src={item} alt={question.assetObjectName ?? 'Lesson object'} className="h-14 w-14 rounded-xl object-cover" />
+                  ) : (
+                    <span key={`${item}-${itemIndex}`}>{item}</span>
+                  )
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    if (question.sequence) {
+      return (
+        <div className="flex justify-center gap-4">
+          {question.sequence.map((entry, index) => (
+            <div
+              key={`${entry}-${index}`}
+              className="flex h-24 w-24 items-center justify-center rounded-[1.8rem] bg-white text-4xl font-black text-slate-800 shadow-[0_10px_30px_rgba(15,23,42,0.08)]"
+            >
+              {entry}
+            </div>
+          ))}
+          <div className="flex h-24 w-24 items-center justify-center rounded-[1.8rem] border-2 border-dashed border-slate-300 bg-white text-4xl font-black text-slate-400">
+            ?
+          </div>
+        </div>
+      );
+    }
+
+    return null;
+  }, [question]);
+
+  const playAudioFile = async (fileName: string) => {
+    try {
+      const audio = new Audio(`${audioBasePath}/${fileName}`);
+      await audio.play();
+      return true;
+    } catch {
+      return false;
     }
   };
 
-  const handleContinue = () => {
-    if (status === 'correct') {
-      setProgress(prev => Math.min(prev + 20, 100));
+  const speakPrompt = () => {
+    if (!question || !('speechSynthesis' in window) || !user.settings.soundEnabled) {
+      return;
     }
-    setStatus('idle');
+
+    playAudioFile(`${level.lessonType}.mp3`).then((played) => {
+      if (played) {
+        return;
+      }
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(new SpeechSynthesisUtterance(question.narration));
+    });
+  };
+
+  const advanceToNext = async () => {
+    if (!question) {
+      return;
+    }
+
+    if (currentIndex === questions.length - 1 || heartsLeft <= 0) {
+      const response = await submitLesson({
+        userId: user.id,
+        levelId: level.id,
+        correctAnswers,
+        totalQuestions: questions.length,
+        heartsLeft,
+      });
+      setSummary(response.session);
+      onLessonComplete(response.user);
+      setStatus('complete');
+      return;
+    }
+
+    setCurrentIndex((value) => value + 1);
     setSelectedOption(null);
+    setStatus('idle');
+  };
+
+  const handleCheck = () => {
+    if (selectedOption === null || !question) {
+      return;
+    }
+
+    if (selectedOption === question.answer) {
+      setCorrectAnswers((value) => value + 1);
+      setStatus('correct');
+      playAudioFile('correct.mp3').catch(() => undefined);
+      return;
+    }
+
+    setHeartsLeft((value) => Math.max(value - 1, 0));
+    setStatus('wrong');
+    playAudioFile('wrong.mp3').catch(() => undefined);
   };
 
   return (
-    <div className="fixed inset-0 bg-white z-[100] flex flex-col font-sans">
-      {/* Game Header */}
-      <header className="max-w-5xl mx-auto w-full px-4 py-6 flex items-center gap-6">
-        <button 
-          onClick={onExit}
-          className="text-slate-400 hover:text-slate-600 cursor-pointer p-1"
-        >
+    <div className="fixed inset-0 z-[100] flex flex-col bg-[linear-gradient(180deg,#f8fafc_0%,#ffffff_35%,#fefce8_100%)] font-sans">
+      <header className="mx-auto flex w-full max-w-5xl items-center gap-6 px-4 py-6">
+        <button onClick={onExit} className="cursor-pointer p-1 text-slate-400 hover:text-slate-700">
           <X size={32} strokeWidth={3} />
         </button>
-        
-        <div className="flex-1 h-4 bg-slate-100 rounded-full overflow-hidden shadow-inner">
-          <motion.div 
-            initial={{ width: '30%' }}
-            animate={{ width: `${progress}%` }}
-            className="h-full bg-emerald-400 rounded-full"
-          />
+
+        <div className="h-4 flex-1 overflow-hidden rounded-full bg-slate-100 shadow-inner">
+          <motion.div animate={{ width: `${progress}%` }} className="h-full rounded-full bg-emerald-400" />
         </div>
 
         <div className="flex items-center gap-2 text-red-500">
           <Heart size={28} fill="currentColor" />
-          <span className="font-black text-xl">5</span>
+          <span className="text-xl font-black">{heartsLeft}</span>
         </div>
       </header>
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-2xl mx-auto w-full px-4 py-8 flex flex-col">
-        <h1 className="text-3xl font-black text-slate-700 mb-8 leading-tight">
-          How many apples are there?
-        </h1>
-
-        {/* Sensory support: Visuals */}
-        <div className="flex-1 flex items-center justify-center bg-slate-50 rounded-3xl mb-12 border-2 border-slate-100 relative overflow-hidden">
-          <div className="flex gap-6 flex-wrap justify-center p-8">
-            {[1, 2, 3].map((i) => (
-              <motion.div
-                key={i}
-                initial={{ scale: 0, rotate: -10 }}
-                animate={{ scale: 1, rotate: 0 }}
-                transition={{ delay: i * 0.1, type: 'spring' }}
-                className="w-32 h-32"
-              >
-                <ImageWithFallback 
-                  src={APPLE_IMAGE} 
-                  alt="Apple" 
-                  className="w-full h-full object-contain drop-shadow-md"
-                />
-              </motion.div>
-            ))}
+      <main className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-4 pb-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-black uppercase tracking-[0.2em] text-sky-500">{level.unit}</p>
+            <h1 className="mt-2 text-3xl font-black text-slate-800">{question?.prompt ?? 'Loading lesson...'}</h1>
           </div>
-          
-          <button className="absolute bottom-4 right-4 p-3 bg-white shadow-md rounded-2xl text-sky-500 hover:bg-sky-50 transition-colors">
-            <Volume2 size={24} />
+
+          <button
+            type="button"
+            onClick={speakPrompt}
+            className="rounded-2xl bg-white p-4 text-sky-500 shadow-[0_8px_20px_rgba(15,23,42,0.08)]"
+          >
+            <Volume2 size={22} />
           </button>
         </div>
 
-        {/* Options Grid */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-32">
-          {options.map((option) => (
+        <div className="mt-8 flex flex-1 items-center justify-center rounded-[2rem] border-2 border-slate-100 bg-slate-50 p-6">
+          {visuals}
+        </div>
+
+        <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {question?.choices.map((option) => (
             <button
-              key={option}
-              disabled={status !== 'idle'}
+              key={String(option)}
+              disabled={status === 'complete'}
               onClick={() => setSelectedOption(option)}
               className={cn(
-                "py-6 rounded-2xl text-2xl font-black border-2 transition-all transform active:scale-95 cursor-pointer",
-                selectedOption === option 
-                  ? "bg-sky-100 border-sky-400 text-sky-600 shadow-[0_4px_0_0_#38bdf8]" 
-                  : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50 shadow-[0_4px_0_0_#e2e8f0]",
-                status === 'correct' && option === correctAnswer && "bg-emerald-100 border-emerald-500 text-emerald-600 shadow-[0_4px_0_0_#10b981]",
-                status === 'wrong' && option === selectedOption && "bg-red-100 border-red-500 text-red-600 shadow-[0_4px_0_0_#ef4444]"
+                'rounded-[1.8rem] border-2 py-6 text-2xl font-black transition',
+                selectedOption === option ? 'border-sky-400 bg-sky-100 text-sky-700' : 'border-slate-200 bg-white text-slate-600',
+                status === 'correct' && option === question.answer && 'border-emerald-400 bg-emerald-100 text-emerald-700',
+                status === 'wrong' && option === selectedOption && 'border-red-400 bg-red-100 text-red-700',
               )}
             >
-              {option}
+              {String(option)}
             </button>
           ))}
         </div>
       </main>
 
-      {/* Bottom Action Bar */}
-      <footer className={cn(
-        "py-8 px-4 border-t-2 transition-colors duration-300",
-        status === 'idle' && "bg-white border-slate-100",
-        status === 'correct' && "bg-emerald-100 border-emerald-200",
-        status === 'wrong' && "bg-red-100 border-red-200",
-        status === 'checking' && "bg-white border-slate-100"
-      )}>
-        <div className="max-w-2xl mx-auto flex items-center justify-between">
+      <footer
+        className={cn(
+          'border-t-2 px-4 py-6 transition-colors',
+          status === 'correct' && 'border-emerald-200 bg-emerald-100',
+          status === 'wrong' && 'border-red-200 bg-red-100',
+          status !== 'correct' && status !== 'wrong' && 'border-slate-100 bg-white',
+        )}
+      >
+        <div className="mx-auto flex max-w-4xl items-center justify-between gap-4">
           <div className="flex-1">
             <AnimatePresence mode="wait">
               {status === 'correct' && (
-                <motion.div 
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  className="flex items-center gap-4 text-emerald-700"
-                >
-                  <div className="bg-white p-2 rounded-full">
+                <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="flex items-center gap-4 text-emerald-700">
+                  <div className="rounded-full bg-white p-2">
                     <CheckCircle2 size={32} />
                   </div>
                   <div>
@@ -141,39 +242,41 @@ export const LessonGame = ({ onExit }: LessonGameProps) => {
                   </div>
                 </motion.div>
               )}
-              {status === 'wrong' && (
-                <motion.div 
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  className="flex items-center gap-4 text-red-700"
-                >
-                  <div className="bg-white p-2 rounded-full">
+
+              {status === 'wrong' && question && (
+                <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="flex items-center gap-4 text-red-700">
+                  <div className="rounded-full bg-white p-2">
                     <XCircle size={32} />
                   </div>
                   <div>
-                    <h4 className="text-2xl font-black">Not quite...</h4>
-                    <p className="font-bold opacity-80 text-sm">Correct answer: {correctAnswer}</p>
+                    <h4 className="text-2xl font-black">Try again</h4>
+                    <p className="font-bold opacity-80">Correct answer: {String(question.answer)}</p>
                   </div>
+                </motion.div>
+              )}
+
+              {status === 'complete' && summary && (
+                <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} className="text-slate-800">
+                  <h4 className="text-2xl font-black">Lesson complete</h4>
+                  <p className="font-bold text-slate-500">
+                    +{summary.xpEarned} XP, {summary.starsEarned} stars, {summary.accuracy}% accuracy
+                  </p>
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
 
           <button
-            onClick={status === 'idle' ? handleCheck : handleContinue}
+            onClick={status === 'idle' ? handleCheck : status === 'complete' ? onExit : advanceToNext}
             disabled={selectedOption === null && status === 'idle'}
             className={cn(
-              "px-12 py-4 rounded-2xl font-black text-xl uppercase tracking-wider transition-all cursor-pointer",
-              status === 'idle' 
-                ? (selectedOption === null 
-                    ? "bg-slate-200 text-slate-400" 
-                    : "bg-emerald-500 text-white shadow-[0_4px_0_0_#059669] hover:bg-emerald-400 active:shadow-none translate-y-0 active:translate-y-1")
-                : (status === 'correct' 
-                    ? "bg-emerald-500 text-white shadow-[0_4px_0_0_#059669] hover:bg-emerald-400" 
-                    : "bg-red-500 text-white shadow-[0_4px_0_0_#dc2626] hover:bg-red-400")
+              'rounded-3xl px-8 py-4 text-xl font-black uppercase tracking-[0.16em] transition',
+              selectedOption === null && status === 'idle'
+                ? 'cursor-not-allowed bg-slate-200 text-slate-400'
+                : 'bg-slate-900 text-white shadow-[0_8px_0_0_#0f172a]',
             )}
           >
-            {status === 'idle' ? 'Check' : 'Continue'}
+            {status === 'idle' ? 'Check' : status === 'complete' ? 'Back to lessons' : 'Continue'}
           </button>
         </div>
       </footer>
