@@ -4,13 +4,19 @@ import path from 'node:path';
 import { URL } from 'node:url';
 import { GoogleAuth } from 'google-auth-library';
 
-import { getPool, hashPassword, initializeDatabase, sanitizeUser } from './db.mjs';
+import { getPool, hashPassword, initializeDatabase, loadEnvFile, sanitizeUser } from './db.mjs';
 import { createQuestionFromTemplate, generateQuestions, getLevels, isTemplateQuestionUsable, normalizeQuestionChoices } from './questions.mjs';
 
-const PORT = Number(process.env.PORT ?? 3001);
 const APP_TIMEZONE = process.env.APP_TIMEZONE ?? 'Asia/Karachi';
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL ?? '').toLowerCase();
+
+function getServerConfig() {
+  return {
+    host: process.env.SERVER_HOST ?? process.env.HOST ?? '0.0.0.0',
+    port: Number(process.env.PORT ?? 3001),
+  };
+}
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -1060,10 +1066,13 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-initializeDatabase()
+loadEnvFile()
+  .then(() => initializeDatabase())
   .then(() => {
-    server.listen(PORT, () => {
-      console.log(`Numberly API running on http://localhost:${PORT}`);
+    const { host, port } = getServerConfig();
+    server.listen(port, host, () => {
+      const publicHost = host === '0.0.0.0' ? 'localhost' : host;
+      console.log(`Numberly API running on http://${publicHost}:${port} (bound to ${host}:${port})`);
     });
   })
   .catch((error) => {
