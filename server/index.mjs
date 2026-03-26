@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { URL } from 'node:url';
 import { GoogleAuth } from 'google-auth-library';
@@ -16,6 +17,18 @@ function getServerConfig() {
     host: process.env.SERVER_HOST ?? process.env.HOST ?? '0.0.0.0',
     port: Number(process.env.PORT ?? 3001),
   };
+}
+
+function getPreferredNetworkAddress() {
+  const interfaces = os.networkInterfaces();
+  for (const entries of Object.values(interfaces)) {
+    for (const entry of entries ?? []) {
+      if (entry.family === 'IPv4' && !entry.internal) {
+        return entry.address;
+      }
+    }
+  }
+  return '127.0.0.1';
 }
 
 function sendJson(response, statusCode, payload) {
@@ -1071,8 +1084,8 @@ loadEnvFile()
   .then(() => {
     const { host, port } = getServerConfig();
     server.listen(port, host, () => {
-      const publicHost = host === '0.0.0.0' ? 'localhost' : host;
-      console.log(`Numberly API running on http://${publicHost}:${port} (bound to ${host}:${port})`);
+      const displayHost = host === '0.0.0.0' ? getPreferredNetworkAddress() : host;
+      console.log(`Numberly API running on http://${displayHost}:${port} (bound to ${host}:${port})`);
     });
   })
   .catch((error) => {
