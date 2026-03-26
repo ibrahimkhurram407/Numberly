@@ -5,6 +5,7 @@ import { Leaderboard } from './components/Leaderboard';
 import { LessonGame } from './components/LessonGame';
 import { LessonPath } from './components/LessonPath';
 import { ContentPage } from './components/ContentPage';
+import { AdminPage } from './components/AdminPage';
 import { ProfilePage } from './components/ProfilePage';
 import { RightPanel } from './components/RightPanel';
 import { SettingsPage } from './components/SettingsPage';
@@ -20,13 +21,42 @@ export default function App() {
   const [activeLesson, setActiveLesson] = useState<Level | null>(null);
 
   useEffect(() => {
+    const stored = window.localStorage.getItem('numberly_user');
+    if (!stored) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(stored) as UserProfile;
+      setUser(parsed);
+      fetchProfile(parsed.id).then((response) => setUser(response.user)).catch(() => undefined);
+    } catch {
+      window.localStorage.removeItem('numberly_user');
+    }
+  }, []);
+
+  useEffect(() => {
     fetchLevels().then((response) => setLevels(response.levels)).catch(() => setLevels([]));
   }, []);
+
+  useEffect(() => {
+    if (user?.role !== 'admin' && (currentPage === 'content' || currentPage === 'admin')) {
+      setCurrentPage('learn');
+    }
+  }, [currentPage, user?.role]);
 
   const refreshUser = async (userId: number) => {
     const response = await fetchProfile(userId);
     setUser(response.user);
   };
+
+  useEffect(() => {
+    if (user) {
+      window.localStorage.setItem('numberly_user', JSON.stringify(user));
+    } else {
+      window.localStorage.removeItem('numberly_user');
+    }
+  }, [user]);
 
   if (!user) {
     return <SignIn onSignedIn={setUser} />;
@@ -53,7 +83,9 @@ export default function App() {
       case 'leaderboard':
         return <Leaderboard user={user} />;
       case 'content':
-        return <ContentPage />;
+        return <ContentPage user={user} />;
+      case 'admin':
+        return <AdminPage user={user} />;
       case 'profile':
         return <ProfilePage user={user} onUserChange={setUser} />;
       case 'settings':
@@ -76,8 +108,10 @@ export default function App() {
       <Sidebar
         currentPage={currentPage}
         onPageChange={setCurrentPage}
+        isAdmin={user.role === 'admin'}
         onSignOut={() => {
           setUser(null);
+          window.localStorage.removeItem('numberly_user');
           setCurrentPage('learn');
         }}
       />

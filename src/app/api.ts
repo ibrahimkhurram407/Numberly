@@ -1,4 +1,4 @@
-import type { LeaderboardEntry, Level, MediaAsset, Question, QuestionTemplate, UserProfile, UserSettings } from './types';
+import type { AdminUserRecord, LeaderboardEntry, Level, MediaAsset, Question, QuestionTemplate, UserProfile, UserSettings } from './types';
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -94,11 +94,12 @@ export async function fetchLeaderboard() {
   return request<{ leaderboard: LeaderboardEntry[] }>('/api/leaderboard');
 }
 
-export async function fetchAssets() {
-  return request<{ assets: MediaAsset[] }>('/api/admin/assets');
+export async function fetchAssets(adminUserId: number) {
+  return request<{ assets: MediaAsset[] }>(`/api/admin/assets?adminUserId=${adminUserId}`);
 }
 
 export async function createAsset(input: {
+  adminUserId: number;
   title: string;
   objectName: string;
   imageData?: string;
@@ -111,19 +112,21 @@ export async function createAsset(input: {
   });
 }
 
-export async function suggestVisionLabels(input: { imageData: string }) {
+export async function suggestVisionLabels(input: { adminUserId: number; imageData: string }) {
   return request<{ labels: string[] }>('/api/admin/assets/vision-labels', {
     method: 'POST',
     body: JSON.stringify(input),
   });
 }
 
-export async function fetchQuestionTemplates(reviewStatus?: 'approved' | 'pending' | 'rejected') {
+export async function fetchQuestionTemplates(adminUserId: number, reviewStatus?: 'approved' | 'pending' | 'rejected') {
   const search = reviewStatus ? `?reviewStatus=${reviewStatus}` : '';
-  return request<{ templates: QuestionTemplate[] }>(`/api/admin/question-templates${search}`);
+  const joiner = search ? '&' : '?';
+  return request<{ templates: QuestionTemplate[] }>(`/api/admin/question-templates${search}${joiner}adminUserId=${adminUserId}`);
 }
 
 export async function createQuestionTemplate(input: {
+  adminUserId: number;
   assetId?: number | null;
   levelId: string;
   title: string;
@@ -142,7 +145,29 @@ export async function createQuestionTemplate(input: {
   });
 }
 
+export async function updateQuestionTemplate(id: number, input: {
+  adminUserId: number;
+  assetId?: number | null;
+  levelId: string;
+  title: string;
+  difficulty: 'easy' | 'medium' | 'hard';
+  prompt: string;
+  narration?: string;
+  choices: Array<string | number>;
+  answer: string | number;
+  visualType?: string;
+  templatePayload?: Record<string, unknown>;
+  tags: string[];
+  reviewStatus?: 'approved' | 'pending' | 'rejected';
+}) {
+  return request<{ template: QuestionTemplate }>(`/api/admin/question-templates/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(input),
+  });
+}
+
 export async function generateQuestionTemplates(input: {
+  adminUserId: number;
   levelId: string;
   difficulty: 'easy' | 'medium' | 'hard';
   count: number;
@@ -153,9 +178,48 @@ export async function generateQuestionTemplates(input: {
   });
 }
 
-export async function reviewQuestionTemplate(id: number, reviewStatus: 'approved' | 'pending' | 'rejected') {
+export async function reviewQuestionTemplate(id: number, adminUserId: number, reviewStatus: 'approved' | 'pending' | 'rejected') {
   return request<{ template: QuestionTemplate }>(`/api/admin/question-templates/${id}/review`, {
     method: 'PUT',
-    body: JSON.stringify({ reviewStatus }),
+    body: JSON.stringify({ adminUserId, reviewStatus }),
+  });
+}
+
+export async function deleteQuestionTemplate(adminUserId: number, id: number) {
+  return request<{ ok: boolean }>(`/api/admin/question-templates/${id}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ adminUserId }),
+  });
+}
+
+export async function deleteAsset(adminUserId: number, id: number) {
+  return request<{ ok: boolean }>(`/api/admin/assets/${id}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ adminUserId }),
+  });
+}
+
+export async function fetchAdminUsers(adminUserId: number) {
+  return request<{ users: AdminUserRecord[] }>(`/api/admin/users?adminUserId=${adminUserId}`);
+}
+
+export async function updateAdminUser(adminUserId: number, userId: number, input: { hearts: number; role: 'admin' | 'user'; dailyGoal: number }) {
+  return request<{ user: UserProfile }>(`/api/admin/users/${userId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ adminUserId, ...input }),
+  });
+}
+
+export async function resetAdminUserPassword(adminUserId: number, userId: number, newPassword: string) {
+  return request<{ ok: boolean }>(`/api/admin/users/${userId}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify({ adminUserId, newPassword }),
+  });
+}
+
+export async function deleteAdminUser(adminUserId: number, userId: number) {
+  return request<{ ok: boolean }>(`/api/admin/users/${userId}`, {
+    method: 'DELETE',
+    body: JSON.stringify({ adminUserId }),
   });
 }

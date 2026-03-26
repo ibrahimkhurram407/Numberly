@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS users (
   display_name VARCHAR(80) NOT NULL,
   email VARCHAR(190) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
+  role VARCHAR(20) NOT NULL DEFAULT 'user',
   avatar_color VARCHAR(20) NOT NULL DEFAULT '#0ea5e9',
   age_group VARCHAR(40) NOT NULL DEFAULT '5-7',
   total_xp INT NOT NULL DEFAULT 0,

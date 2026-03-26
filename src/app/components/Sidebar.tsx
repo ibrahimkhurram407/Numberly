@@ -7,6 +7,7 @@ interface SidebarProps {
   currentPage: string;
   onPageChange: (page: string) => void;
   onSignOut: () => void;
+  isAdmin: boolean;
 }
 
 const navItems = [
@@ -17,7 +18,8 @@ const navItems = [
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
-export const Sidebar = ({ currentPage, onPageChange, onSignOut }: SidebarProps) => {
+export const Sidebar = ({ currentPage, onPageChange, onSignOut, isAdmin }: SidebarProps) => {
+  const items = isAdmin ? [...navItems, { id: 'admin', label: 'Users', icon: User }] : navItems.filter((item) => item.id !== 'content');
   return (
     <nav className="fixed bottom-0 left-0 right-0 z-50 flex items-center justify-around border-t border-slate-200 bg-white px-4 py-2 lg:relative lg:h-full lg:w-72 lg:flex-col lg:items-stretch lg:justify-start lg:gap-2 lg:border-r lg:border-t-0 lg:p-5">
       <div className="hidden rounded-[2rem] bg-[linear-gradient(180deg,#0ea5e9_0%,#0284c7_100%)] p-6 text-white lg:block">
@@ -29,7 +31,7 @@ export const Sidebar = ({ currentPage, onPageChange, onSignOut }: SidebarProps) 
       </div>
 
       <div className="flex flex-1 items-center justify-around gap-2 lg:mt-6 lg:flex-col lg:items-stretch lg:justify-start">
-        {navItems.map(({ id, label, icon: Icon }) => (
+        {items.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => onPageChange(id)}

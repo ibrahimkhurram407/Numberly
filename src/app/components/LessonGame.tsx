@@ -16,7 +16,7 @@ interface LessonGameProps {
 export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGameProps) => {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const [selectedOption, setSelectedOption] = useState<string | number | null>(null);
   const [status, setStatus] = useState<'idle' | 'correct' | 'wrong' | 'complete'>('idle');
   const [correctAnswers, setCorrectAnswers] = useState(0);
   const [heartsLeft, setHeartsLeft] = useState(user.hearts || 5);
@@ -32,11 +32,31 @@ export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGame
 
   const question = questions[currentIndex];
   const progress = questions.length ? ((currentIndex + (status === 'complete' ? 1 : 0)) / questions.length) * 100 : 0;
+  const isImageSource = (value: string) => value.startsWith('/uploads/') || value.startsWith('http') || value.startsWith('data:image/');
+  const isImageChoiceQuestion = Boolean(question?.visualType === 'imageChoices' && question.visualItems?.length === question.choices.length);
 
   const visuals = useMemo(() => {
     if (!question) {
       return null;
     }
+    if (question.assetKind === 'image' && question.visualItems?.length === 1 && isImageSource(question.visualItems[0])) {
+      return (
+        <div
+          className="flex w-full max-w-md flex-col items-center gap-4 rounded-[2rem] bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.08)]"
+          title={question.assetObjectName ?? question.assetTitle ?? ''}
+        >
+          <img
+            src={question.visualItems[0]}
+            alt={question.assetObjectName ?? question.assetTitle ?? 'Lesson image'}
+            className="h-56 w-full rounded-[1.5rem] object-cover"
+            onError={(event) => {
+              event.currentTarget.style.display = 'none';
+            }}
+          />
+        </div>
+      );
+    }
+
     if (question.visualItems) {
       return (
         <div className="flex flex-wrap justify-center gap-4">
@@ -47,10 +67,17 @@ export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGame
               animate={{ opacity: 1, scale: 1 }}
               className="flex h-24 w-24 items-center justify-center rounded-[1.8rem] bg-white text-5xl shadow-[0_10px_30px_rgba(15,23,42,0.08)]"
             >
-              {question.assetKind === 'image' ? (
-                <img src={item} alt={question.assetObjectName ?? 'Lesson object'} className="h-20 w-20 rounded-2xl object-cover" />
+              {question.assetKind === 'image' && isImageSource(item) ? (
+                <img
+                  src={item}
+                  alt={question.assetObjectName ?? 'Lesson object'}
+                  className="h-20 w-20 rounded-2xl object-cover"
+                  onError={(event) => {
+                    event.currentTarget.style.display = 'none';
+                  }}
+                />
               ) : (
-                item
+                <span className="text-center text-lg font-black text-slate-700">{item}</span>
               )}
             </motion.div>
           ))}
@@ -65,10 +92,18 @@ export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGame
             <div key={index} className="rounded-[1.8rem] bg-white px-6 py-4 shadow-[0_10px_30px_rgba(15,23,42,0.08)]">
               <div className="flex gap-3 text-4xl">
                 {group.map((item, itemIndex) => (
-                  question.assetKind === 'image' ? (
-                    <img key={`${item}-${itemIndex}`} src={item} alt={question.assetObjectName ?? 'Lesson object'} className="h-14 w-14 rounded-xl object-cover" />
+                  question.assetKind === 'image' && isImageSource(item) ? (
+                    <img
+                      key={`${item}-${itemIndex}`}
+                      src={item}
+                      alt={question.assetObjectName ?? 'Lesson object'}
+                      className="h-14 w-14 rounded-xl object-cover"
+                      onError={(event) => {
+                        event.currentTarget.style.display = 'none';
+                      }}
+                    />
                   ) : (
-                    <span key={`${item}-${itemIndex}`}>{item}</span>
+                    <span key={`${item}-${itemIndex}`} className="text-center text-lg font-black text-slate-700">{item}</span>
                   )
                 ))}
               </div>
@@ -98,6 +133,7 @@ export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGame
 
     return null;
   }, [question]);
+  const hasVisuals = Boolean(visuals) && !isImageChoiceQuestion;
 
   const playAudioFile = async (fileName: string) => {
     try {
@@ -147,7 +183,7 @@ export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGame
     setStatus('idle');
   };
 
-  const handleCheck = () => {
+  const handleCheck = async () => {
     if (selectedOption === null || !question) {
       return;
     }
@@ -159,9 +195,23 @@ export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGame
       return;
     }
 
-    setHeartsLeft((value) => Math.max(value - 1, 0));
+    const nextHearts = Math.max(heartsLeft - 1, 0);
+    setHeartsLeft(nextHearts);
     setStatus('wrong');
     playAudioFile('wrong.mp3').catch(() => undefined);
+
+    if (nextHearts <= 0) {
+      const response = await submitLesson({
+        userId: user.id,
+        levelId: level.id,
+        correctAnswers,
+        totalQuestions: questions.length,
+        heartsLeft: nextHearts,
+      });
+      setSummary(response.session);
+      onLessonComplete(response.user);
+      setStatus('complete');
+    }
   };
 
   return (
@@ -191,32 +241,61 @@ export const LessonGame = ({ level, user, onExit, onLessonComplete }: LessonGame
           <button
             type="button"
             onClick={speakPrompt}
-            className="rounded-2xl bg-white p-4 text-sky-500 shadow-[0_8px_20px_rgba(15,23,42,0.08)]"
+            className="cursor-pointer rounded-2xl bg-white p-4 text-sky-500 shadow-[0_8px_20px_rgba(15,23,42,0.08)]"
           >
             <Volume2 size={22} />
           </button>
         </div>
 
-        <div className="mt-8 flex flex-1 items-center justify-center rounded-[2rem] border-2 border-slate-100 bg-slate-50 p-6">
-          {visuals}
-        </div>
+        {hasVisuals && (
+          <div className="mt-8 flex flex-1 items-center justify-center rounded-[2rem] border-2 border-slate-100 bg-slate-50 p-6">
+            {visuals}
+          </div>
+        )}
 
-        <div className="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {question?.choices.map((option) => (
-            <button
-              key={String(option)}
-              disabled={status === 'complete'}
-              onClick={() => setSelectedOption(option)}
-              className={cn(
-                'rounded-[1.8rem] border-2 py-6 text-2xl font-black transition',
-                selectedOption === option ? 'border-sky-400 bg-sky-100 text-sky-700' : 'border-slate-200 bg-white text-slate-600',
-                status === 'correct' && option === question.answer && 'border-emerald-400 bg-emerald-100 text-emerald-700',
-                status === 'wrong' && option === selectedOption && 'border-red-400 bg-red-100 text-red-700',
-              )}
-            >
-              {String(option)}
-            </button>
-          ))}
+        <div className={`${hasVisuals ? 'mt-8' : 'mt-12'} ${isImageChoiceQuestion ? 'grid grid-cols-2 gap-5 sm:grid-cols-3' : 'grid grid-cols-2 gap-4 sm:grid-cols-4'}`}>
+          {question?.choices.map((option, optionIndex) => {
+            const optionVisual = question.visualItems?.[optionIndex];
+            const showImageChoice = isImageChoiceQuestion && optionVisual;
+
+            return (
+              <button
+                key={`${String(option)}-${currentIndex}-${optionIndex}`}
+                disabled={status === 'complete'}
+                onClick={() => setSelectedOption(option)}
+                title={String(option)}
+                className={cn(
+                  showImageChoice
+                    ? 'overflow-hidden rounded-[2rem] border-2 bg-white p-3 transition'
+                    : 'rounded-[1.8rem] border-2 py-6 text-2xl font-black transition',
+                  selectedOption === option ? 'border-sky-400 bg-sky-100 text-sky-700' : 'border-slate-200 bg-white text-slate-600',
+                  status === 'correct' && option === question.answer && 'border-emerald-400 bg-emerald-100 text-emerald-700',
+                  status === 'wrong' && option === selectedOption && 'border-red-400 bg-red-100 text-red-700',
+                )}
+              >
+                {showImageChoice ? (
+                  <div className="space-y-3">
+                    {question.assetKind === 'image' && isImageSource(optionVisual) ? (
+                      <img
+                        src={optionVisual}
+                        alt={String(option)}
+                        className="h-44 w-full rounded-[1.4rem] object-cover"
+                        onError={(event) => {
+                          event.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    ) : (
+                      <div className="flex h-44 items-center justify-center rounded-[1.4rem] bg-slate-50 text-7xl">
+                        {optionVisual}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  String(option)
+                )}
+              </button>
+            );
+          })}
         </div>
       </main>
 

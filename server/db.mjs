@@ -123,12 +123,18 @@ async function ensureUserMigrations(pool, databaseName) {
   const [columns] = await pool.query(
     `SELECT COLUMN_NAME
      FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users' AND COLUMN_NAME = 'last_lesson_on'`,
+     WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users' AND COLUMN_NAME IN ('last_lesson_on', 'role')`,
     [databaseName],
   );
 
-  if (Array.isArray(columns) && columns.length === 0) {
+  const columnNames = new Set((columns ?? []).map((column) => column.COLUMN_NAME));
+
+  if (!columnNames.has('last_lesson_on')) {
     await pool.query(`ALTER TABLE users ADD COLUMN last_lesson_on DATE NULL AFTER streak_days`);
+  }
+
+  if (!columnNames.has('role')) {
+    await pool.query(`ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'user' AFTER password_hash`);
   }
 }
 
@@ -161,6 +167,7 @@ export async function sanitizeUser(row) {
     id: row.id,
     displayName: row.display_name,
     email: row.email,
+    role: row.role ?? 'user',
     avatarColor: row.avatar_color,
     ageGroup: row.age_group,
     totalXp: row.total_xp,

@@ -5,11 +5,12 @@ import { URL } from 'node:url';
 import { GoogleAuth } from 'google-auth-library';
 
 import { getPool, hashPassword, initializeDatabase, sanitizeUser } from './db.mjs';
-import { createQuestionFromTemplate, generateQuestions, getLevels } from './questions.mjs';
+import { createQuestionFromTemplate, generateQuestions, getLevels, isTemplateQuestionUsable, normalizeQuestionChoices } from './questions.mjs';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const APP_TIMEZONE = process.env.APP_TIMEZONE ?? 'Asia/Karachi';
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? 'gemini-2.5-flash';
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL ?? '').toLowerCase();
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
@@ -19,6 +20,55 @@ function sendJson(response, statusCode, payload) {
     'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS',
   });
   response.end(JSON.stringify(payload));
+}
+
+async function sendStaticFile(response, filePath) {
+  try {
+    const file = await fs.readFile(filePath);
+    const extension = path.extname(filePath).toLowerCase();
+    const contentType =
+      extension === '.png' ? 'image/png'
+      : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg'
+      : extension === '.webp' ? 'image/webp'
+      : extension === '.gif' ? 'image/gif'
+      : 'application/octet-stream';
+
+    response.writeHead(200, {
+      'Content-Type': contentType,
+      'Access-Control-Allow-Origin': '*',
+    });
+    response.end(file);
+  } catch {
+    sendJson(response, 404, { error: 'File not found.' });
+  }
+}
+
+function getPublicFilePathFromUrl(fileUrl) {
+  if (!fileUrl?.startsWith('/uploads/')) {
+    return null;
+  }
+
+  const relativePath = fileUrl.replace(/^\/+/, '');
+  const publicRoot = path.resolve(process.cwd(), 'public');
+  const filePath = path.resolve(publicRoot, relativePath);
+  if (!filePath.startsWith(publicRoot)) {
+    return null;
+  }
+  return filePath;
+}
+
+async function imagePathExists(imagePath) {
+  const filePath = getPublicFilePathFromUrl(imagePath);
+  if (!filePath) {
+    return false;
+  }
+
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function readBody(request) {
@@ -41,6 +91,61 @@ async function getUserById(userId) {
   return rows[0] ?? null;
 }
 
+async function normalizeUserStreak(userId) {
+  const pool = await getPool();
+  const user = await getUserById(userId);
+  if (!user) {
+    return user;
+  }
+
+  if (!user.last_lesson_on) {
+    if (user.streak_days !== 0) {
+      await pool.query(`UPDATE users SET streak_days = 0 WHERE id = ?`, [userId]);
+      return getUserById(userId);
+    }
+    return user;
+  }
+
+  const lastLessonOn = new Date(user.last_lesson_on).toISOString().slice(0, 10);
+  const today = getAppDateParts();
+  const yesterday = addDays(today, -1);
+
+  if (lastLessonOn !== today && lastLessonOn !== yesterday && user.streak_days !== 0) {
+    await pool.query(`UPDATE users SET streak_days = 0 WHERE id = ?`, [userId]);
+    return getUserById(userId);
+  }
+
+  return user;
+}
+
+async function syncAdminRole(user) {
+  if (!user) {
+    return user;
+  }
+
+  const pool = await getPool();
+  const [rows] = await pool.query(`SELECT COUNT(*) AS adminCount FROM users WHERE role = 'admin'`);
+  const adminCount = Number(rows[0]?.adminCount ?? 0);
+  const shouldPromote =
+    (ADMIN_EMAIL && user.email?.trim().toLowerCase() === ADMIN_EMAIL) ||
+    (!ADMIN_EMAIL && adminCount === 0);
+
+  if (!shouldPromote || user.role === 'admin') {
+    return user;
+  }
+
+  await pool.query(`UPDATE users SET role = 'admin' WHERE id = ?`, [user.id]);
+  return getUserById(user.id);
+}
+
+async function requireAdmin(adminUserId) {
+  const adminUser = await getUserById(adminUserId);
+  if (!adminUser || adminUser.role !== 'admin') {
+    throw new Error('Admin access is required.');
+  }
+  return adminUser;
+}
+
 async function getLeaderboard() {
   const pool = await getPool();
   const [rows] = await pool.query(
@@ -56,6 +161,16 @@ async function getLeaderboard() {
   }));
 }
 
+async function listUsers() {
+  const pool = await getPool();
+  const [rows] = await pool.query(
+    `SELECT id, display_name AS displayName, email, role, age_group AS ageGroup, total_xp AS totalXp, streak_days AS streakDays, hearts, daily_goal AS dailyGoal, avatar_color AS avatarColor
+     FROM users
+     ORDER BY created_at ASC`,
+  );
+  return rows;
+}
+
 async function listAssets() {
   const pool = await getPool();
   const [rows] = await pool.query(
@@ -65,11 +180,14 @@ async function listAssets() {
      ORDER BY created_at DESC`,
   );
 
-  return rows.map((row) => ({
+  const mapped = rows.map((row) => ({
     ...row,
     manualTags: typeof row.manualTags === 'string' ? JSON.parse(row.manualTags) : row.manualTags ?? [],
     visionLabels: typeof row.visionLabels === 'string' ? JSON.parse(row.visionLabels) : row.visionLabels ?? [],
   }));
+
+  const existingFlags = await Promise.all(mapped.map((asset) => imagePathExists(asset.imagePath)));
+  return mapped.filter((_, index) => existingFlags[index]);
 }
 
 async function listQuestionTemplates({ reviewStatus } = {}) {
@@ -93,16 +211,23 @@ async function listQuestionTemplates({ reviewStatus } = {}) {
     values,
   );
 
-  return rows.map((row) => ({
+  const mapped = rows.map((row) => ({
     ...row,
     choices: typeof row.choices === 'string' ? JSON.parse(row.choices) : row.choices ?? [],
     templatePayload: typeof row.templatePayload === 'string' ? JSON.parse(row.templatePayload) : row.templatePayload ?? {},
     tags: typeof row.tags === 'string' ? JSON.parse(row.tags) : row.tags ?? [],
   }));
+
+  const existingFlags = await Promise.all(mapped.map((template) => imagePathExists(template.assetImagePath)));
+  return mapped.map((template, index) => ({
+    ...template,
+    assetImagePath: existingFlags[index] ? template.assetImagePath : undefined,
+  }));
 }
 
 async function createQuestionTemplate(input) {
   const pool = await getPool();
+  const normalizedQuestion = normalizeQuestionChoices(input.choices, input.answer);
   const [result] = await pool.query(
     `INSERT INTO question_templates
      (asset_id, level_id, title, difficulty, source_type, review_status, prompt, narration, choices, answer, visual_type, template_payload, tags)
@@ -116,8 +241,8 @@ async function createQuestionTemplate(input) {
       input.reviewStatus ?? 'approved',
       input.prompt,
       input.narration,
-      JSON.stringify(input.choices),
-      String(input.answer),
+      JSON.stringify(normalizedQuestion.choices),
+      String(normalizedQuestion.answer),
       input.visualType ?? 'choiceOnly',
       JSON.stringify(input.templatePayload ?? {}),
       JSON.stringify(input.tags ?? []),
@@ -126,6 +251,39 @@ async function createQuestionTemplate(input) {
 
   const templates = await listQuestionTemplates();
   return templates.find((template) => template.id === result.insertId);
+}
+
+async function updateQuestionTemplate(id, input) {
+  const pool = await getPool();
+  const normalizedQuestion = normalizeQuestionChoices(input.choices, input.answer);
+  await pool.query(
+    `UPDATE question_templates
+     SET asset_id = ?, level_id = ?, title = ?, difficulty = ?, prompt = ?, narration = ?, choices = ?, answer = ?, visual_type = ?, template_payload = ?, tags = ?, review_status = ?
+     WHERE id = ?`,
+    [
+      input.assetId ?? null,
+      input.levelId,
+      input.title,
+      input.difficulty ?? 'easy',
+      input.prompt,
+      input.narration,
+      JSON.stringify(normalizedQuestion.choices),
+      String(normalizedQuestion.answer),
+      input.visualType ?? 'choiceOnly',
+      JSON.stringify(input.templatePayload ?? {}),
+      JSON.stringify(input.tags ?? []),
+      input.reviewStatus ?? 'approved',
+      id,
+    ],
+  );
+
+  const templates = await listQuestionTemplates();
+  return templates.find((template) => template.id === Number(id));
+}
+
+async function deleteQuestionTemplate(id) {
+  const pool = await getPool();
+  await pool.query(`DELETE FROM question_templates WHERE id = ?`, [id]);
 }
 
 async function updateQuestionReviewStatus(id, reviewStatus) {
@@ -152,6 +310,21 @@ async function saveImageToPublic({ imageData, fileName }) {
   await fs.writeFile(path.join(uploadsDir, finalName), Buffer.from(base64Payload, 'base64'));
 
   return `/uploads/assets/${finalName}`;
+}
+
+async function deleteImageFromPublic(imagePath) {
+  const filePath = getPublicFilePathFromUrl(imagePath);
+  if (!filePath) {
+    return;
+  }
+
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
 }
 
 async function detectVisionLabels(imageData) {
@@ -384,6 +557,16 @@ const server = http.createServer(async (request, response) => {
   const pathname = url.pathname;
 
   try {
+    if (request.method === 'GET' && pathname.startsWith('/uploads/')) {
+      const filePath = getPublicFilePathFromUrl(pathname);
+      if (!filePath) {
+        sendJson(response, 403, { error: 'Invalid file path.' });
+        return;
+      }
+      await sendStaticFile(response, filePath);
+      return;
+    }
+
     if (request.method === 'GET' && pathname === '/api/health') {
       sendJson(response, 200, { ok: true, database: process.env.MYSQL_DATABASE ?? 'numberly' });
       return;
@@ -399,30 +582,26 @@ const server = http.createServer(async (request, response) => {
       const count = Number(url.searchParams.get('count') ?? 5);
       const assets = await listAssets();
       const level = getLevels().find((entry) => entry.id === levelId) ?? getLevels()[0];
-      const approvedTemplates = (await listQuestionTemplates({ reviewStatus: 'approved' })).filter((template) => template.levelId === levelId);
+      const approvedTemplates = (await listQuestionTemplates({ reviewStatus: 'approved' }))
+        .filter((template) => template.levelId === levelId)
+        .filter((template) => isTemplateQuestionUsable(template, level));
 
-      if (approvedTemplates.length >= count) {
-        sendJson(response, 200, { questions: approvedTemplates.slice(0, count).map(createQuestionFromTemplate) });
-        return;
-      }
-
-      let questions;
-      try {
-        questions = await generateGeminiQuestions({ level, assets, count });
-      } catch {
-        questions = null;
-      }
-
-      sendJson(response, 200, { questions: questions ?? generateQuestions(levelId, count, assets) });
+      const templateQuestions = approvedTemplates.slice(0, count).map(createQuestionFromTemplate);
+      const fallbackQuestions = generateQuestions(levelId, Math.max(count - templateQuestions.length, 0), assets);
+      sendJson(response, 200, { questions: [...templateQuestions, ...fallbackQuestions].slice(0, count) });
       return;
     }
 
     if (request.method === 'GET' && pathname === '/api/admin/assets') {
+      const adminUserId = url.searchParams.get('adminUserId');
+      await requireAdmin(adminUserId);
       sendJson(response, 200, { assets: await listAssets() });
       return;
     }
 
     if (request.method === 'GET' && pathname === '/api/admin/question-templates') {
+      const adminUserId = url.searchParams.get('adminUserId');
+      await requireAdmin(adminUserId);
       const reviewStatus = url.searchParams.get('reviewStatus') ?? undefined;
       sendJson(response, 200, { templates: await listQuestionTemplates({ reviewStatus }) });
       return;
@@ -430,6 +609,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && pathname === '/api/admin/question-templates/generate') {
       const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
       const level = getLevels().find((entry) => entry.id === body.levelId) ?? getLevels()[0];
       const assets = await listAssets();
       const suggestions = await generateGeminiTemplateSuggestions({
@@ -468,6 +648,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && pathname === '/api/admin/question-templates') {
       const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
       if (!body.levelId || !body.title || !body.prompt || !body.answer || !Array.isArray(body.choices) || body.choices.length < 2) {
         sendJson(response, 400, { error: 'levelId, title, prompt, answer, and at least two choices are required.' });
         return;
@@ -493,9 +674,47 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'PUT' && pathname.startsWith('/api/admin/question-templates/') && !pathname.endsWith('/review')) {
+      const id = pathname.split('/').pop();
+      const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
+      if (!body.levelId || !body.title || !body.prompt || !body.answer || !Array.isArray(body.choices) || body.choices.length < 2) {
+        sendJson(response, 400, { error: 'levelId, title, prompt, answer, and at least two choices are required.' });
+        return;
+      }
+
+      const template = await updateQuestionTemplate(id, {
+        assetId: body.assetId ?? null,
+        levelId: body.levelId,
+        title: body.title,
+        difficulty: body.difficulty ?? 'easy',
+        prompt: body.prompt,
+        narration: body.narration ?? body.prompt,
+        choices: body.choices,
+        answer: body.answer,
+        visualType: body.visualType ?? 'choiceOnly',
+        templatePayload: body.templatePayload ?? {},
+        tags: body.tags ?? [],
+        reviewStatus: body.reviewStatus ?? 'approved',
+      });
+
+      sendJson(response, 200, { template });
+      return;
+    }
+
+    if (request.method === 'DELETE' && pathname.startsWith('/api/admin/question-templates/')) {
+      const id = pathname.split('/').pop();
+      const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
+      await deleteQuestionTemplate(id);
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
     if (request.method === 'PUT' && pathname.startsWith('/api/admin/question-templates/') && pathname.endsWith('/review')) {
       const id = pathname.split('/')[4];
       const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
       if (!['approved', 'rejected', 'pending'].includes(body.reviewStatus)) {
         sendJson(response, 400, { error: 'reviewStatus must be approved, rejected, or pending.' });
         return;
@@ -507,6 +726,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && pathname === '/api/admin/assets/vision-labels') {
       const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
       if (!body.imageData) {
         sendJson(response, 400, { error: 'imageData is required.' });
         return;
@@ -519,7 +739,8 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'POST' && pathname === '/api/admin/assets') {
       const body = await readBody(request);
-      const { title, objectName, imageData, fileName, imageUrl, manualTags = [] } = body;
+      await requireAdmin(body.adminUserId);
+      const { title, objectName, imageData, fileName, manualTags = [] } = body;
 
       if (!title || !objectName || !imageData) {
         sendJson(response, 400, { error: 'title, objectName, and an uploaded image are required.' });
@@ -567,6 +788,67 @@ const server = http.createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'DELETE' && pathname.startsWith('/api/admin/assets/')) {
+      const assetId = pathname.split('/').pop();
+      const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
+      const pool = await getPool();
+      const [rows] = await pool.query(`SELECT image_path AS imagePath FROM media_assets WHERE id = ?`, [assetId]);
+      const asset = rows[0];
+
+      if (!asset) {
+        sendJson(response, 404, { error: 'Asset not found.' });
+        return;
+      }
+
+      await pool.query(`DELETE FROM media_assets WHERE id = ?`, [assetId]);
+      await deleteImageFromPublic(asset.imagePath);
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === 'GET' && pathname === '/api/admin/users') {
+      const adminUserId = url.searchParams.get('adminUserId');
+      await requireAdmin(adminUserId);
+      sendJson(response, 200, { users: await listUsers() });
+      return;
+    }
+
+    if (request.method === 'PUT' && pathname.startsWith('/api/admin/users/')) {
+      const userId = pathname.split('/').pop();
+      const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
+      const pool = await getPool();
+      await pool.query(
+        `UPDATE users
+         SET hearts = ?, role = ?, daily_goal = ?
+         WHERE id = ?`,
+        [Number(body.hearts ?? 5), body.role ?? 'user', Number(body.dailyGoal ?? 5), userId],
+      );
+      sendJson(response, 200, { user: await sanitizeUser(await getUserById(userId)) });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname.startsWith('/api/admin/users/') && pathname.endsWith('/reset-password')) {
+      const userId = pathname.split('/')[4];
+      const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
+      const pool = await getPool();
+      await pool.query(`UPDATE users SET password_hash = ? WHERE id = ?`, [hashPassword(body.newPassword), userId]);
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
+    if (request.method === 'DELETE' && pathname.startsWith('/api/admin/users/')) {
+      const userId = pathname.split('/').pop();
+      const body = await readBody(request);
+      await requireAdmin(body.adminUserId);
+      const pool = await getPool();
+      await pool.query(`DELETE FROM users WHERE id = ?`, [userId]);
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+
     if (request.method === 'POST' && pathname === '/api/auth/register') {
       const body = await readBody(request);
       const { displayName, email, password, ageGroup = '5-7' } = body;
@@ -580,11 +862,18 @@ const server = http.createServer(async (request, response) => {
       const passwordHash = hashPassword(password);
       const avatarPalette = ['#0ea5e9', '#14b8a6', '#f97316', '#8b5cf6'];
       const avatarColor = avatarPalette[Math.floor(Math.random() * avatarPalette.length)];
+      const [adminRows] = await pool.query(`SELECT COUNT(*) AS adminCount FROM users WHERE role = 'admin'`);
+      const adminCount = Number(adminRows[0]?.adminCount ?? 0);
+      const role =
+        (ADMIN_EMAIL && email.trim().toLowerCase() === ADMIN_EMAIL) ||
+        (!ADMIN_EMAIL && adminCount === 0)
+          ? 'admin'
+          : 'user';
 
       const [result] = await pool.query(
-        `INSERT INTO users (display_name, email, password_hash, age_group, avatar_color)
-         VALUES (?, ?, ?, ?, ?)`,
-        [displayName.trim(), email.trim().toLowerCase(), passwordHash, ageGroup, avatarColor],
+        `INSERT INTO users (display_name, email, password_hash, role, age_group, avatar_color)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [displayName.trim(), email.trim().toLowerCase(), passwordHash, role, ageGroup, avatarColor],
       );
 
       await pool.query(
@@ -608,12 +897,15 @@ const server = http.createServer(async (request, response) => {
 
       const pool = await getPool();
       const [rows] = await pool.query('SELECT * FROM users WHERE email = ?', [email.trim().toLowerCase()]);
-      const user = rows[0];
+      let user = rows[0];
 
       if (!user || user.password_hash !== hashPassword(password)) {
         sendJson(response, 401, { error: 'Invalid email or password.' });
         return;
       }
+
+      user = await syncAdminRole(user);
+      user = await normalizeUserStreak(user.id);
 
       sendJson(response, 200, { user: await sanitizeUser(user) });
       return;
@@ -621,7 +913,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === 'GET' && pathname.startsWith('/api/profile/')) {
       const userId = pathname.split('/').pop();
-      const user = await getUserById(userId);
+      const user = await normalizeUserStreak(userId);
       if (!user) {
         sendJson(response, 404, { error: 'User not found.' });
         return;

@@ -24,6 +24,18 @@ const VISUAL_LIBRARY = {
   faceUpset: 'UPSET',
 };
 
+const EMOTION_VISUALS = {
+  happy: '🙂',
+  sad: '😢',
+  angry: '😠',
+  calm: '😌',
+  upset: '😣',
+  scared: '😨',
+  excited: '🤩',
+  sleepy: '😴',
+  worried: '😟',
+};
+
 const EMOTION_SETS = [
   { prompt: 'Which face looks happy?', answer: 'Happy', choices: ['Happy', 'Sad', 'Angry'] },
   { prompt: 'Which face looks calm?', answer: 'Calm', choices: ['Calm', 'Upset', 'Scared'] },
@@ -41,6 +53,26 @@ const SOCIAL_SETS = [
   { prompt: 'Someone else is using the toy. What can you do?', answer: 'Wait for your turn', choices: ['Grab it', 'Wait for your turn', 'Throw it'] },
   { prompt: 'A classmate looks upset. What could help?', answer: 'Ask if they need help', choices: ['Ask if they need help', 'Point and laugh', 'Run away'] },
 ];
+
+const EMOTION_WORDS = new Set([
+  'happy',
+  'sad',
+  'calm',
+  'upset',
+  'angry',
+  'scared',
+  'excited',
+  'worried',
+  'tired',
+]);
+
+const ROUTINE_KEYWORDS = ['first', 'next', 'before', 'after', 'routine', 'morning', 'school', 'bedtime', 'breakfast', 'teeth', 'dress', 'wake'];
+const SOCIAL_KEYWORDS = ['friend', 'kind', 'turn', 'wait', 'help', 'sharing', 'listen', 'classmate', 'toy', 'slide'];
+
+function containsKeyword(text, keywords) {
+  const haystack = String(text ?? '').toLowerCase();
+  return keywords.some((keyword) => haystack.includes(keyword));
+}
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -72,6 +104,104 @@ function pickAsset(assets, index) {
 
 function pickScenario(scenarios, index) {
   return scenarios[index % scenarios.length];
+}
+
+function findEmotionAsset(assets, emotion, offset = 0) {
+  const target = String(emotion).toLowerCase();
+  const matches = (assets ?? []).filter((asset) => {
+    const haystack = [
+      asset.objectName,
+      asset.title,
+      ...(asset.manualTags ?? []),
+      ...(asset.visionLabels ?? []),
+    ]
+      .join(' ')
+      .toLowerCase();
+
+    return haystack.includes(target);
+  });
+
+  if (!matches.length) {
+    return null;
+  }
+
+  return matches[offset % matches.length];
+}
+
+function normalizeChoiceValue(choice) {
+  if (typeof choice === 'number') {
+    return choice;
+  }
+  return String(choice ?? '').trim();
+}
+
+export function normalizeQuestionChoices(choices, answer) {
+  const normalized = [];
+  const seen = new Set();
+
+  for (const rawChoice of choices ?? []) {
+    const value = normalizeChoiceValue(rawChoice);
+    const key = String(value).toLowerCase();
+    if (!value || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push(value);
+  }
+
+  const normalizedAnswer = normalizeChoiceValue(answer);
+  const answerKey = String(normalizedAnswer).toLowerCase();
+  if (normalizedAnswer && !seen.has(answerKey)) {
+    normalized.push(normalizedAnswer);
+  }
+
+  return {
+    choices: normalized,
+    answer: normalizedAnswer,
+  };
+}
+
+export function isTemplateQuestionUsable(template, level) {
+  const { choices, answer } = normalizeQuestionChoices(template?.choices, template?.answer);
+  if (choices.length < 2 || !choices.some((choice) => choice === answer)) {
+    return false;
+  }
+
+  const promptText = `${template?.title ?? ''} ${template?.prompt ?? ''} ${template?.narration ?? ''}`.toLowerCase();
+  if (!promptText.trim()) {
+    return false;
+  }
+
+  if (promptText.includes('general knowledge')) {
+    return false;
+  }
+
+  if (level?.lessonType === 'emotionChoice') {
+    if (template.visualType !== 'imageChoices') {
+      return false;
+    }
+
+    const lowerChoices = choices.map((choice) => String(choice).toLowerCase());
+    const yesNoOnly = lowerChoices.every((choice) => choice === 'yes' || choice === 'no');
+    if (yesNoOnly) {
+      return false;
+    }
+
+    const hasEmotionChoice = lowerChoices.some((choice) => EMOTION_WORDS.has(choice));
+    if (!hasEmotionChoice) {
+      return false;
+    }
+  }
+
+  if (level?.lessonType === 'routineOrder' && !containsKeyword(promptText, ROUTINE_KEYWORDS)) {
+    return false;
+  }
+
+  if (level?.lessonType === 'socialChoice' && !containsKeyword(promptText, SOCIAL_KEYWORDS)) {
+    return false;
+  }
+
+  return true;
 }
 
 function buildCountQuestion(level, index, assets) {
@@ -108,8 +238,8 @@ function buildMatchQuestion(level, index, assets) {
   const asset = pickAsset(assets, index);
   return {
     id: `${level.id}-q${index + 1}`,
-    prompt: asset ? `Choose the number that matches the ${asset.objectName} group.` : 'Choose the number that matches the group.',
-    narration: 'Look at the group and pick the matching number.',
+    prompt: asset ? `How many pictures of ${asset.objectName} are there?` : 'How many pictures are there?',
+    narration: asset ? `Count how many pictures of ${asset.objectName} you can see.` : 'Count how many pictures you can see.',
     choices: createChoices(answer, 1, 10),
     answer,
     visualType: 'assetMatch',
@@ -180,15 +310,23 @@ function buildSequenceQuestion(level, index) {
   };
 }
 
-function buildEmotionQuestion(level, index) {
+function buildEmotionQuestion(level, index, assets) {
   const scenario = pickScenario(EMOTION_SETS, index);
+  const visualItems = scenario.choices.map((choice, choiceIndex) => {
+    const asset = findEmotionAsset(assets, choice, index + choiceIndex);
+    return asset?.imagePath ?? EMOTION_VISUALS[String(choice).toLowerCase()] ?? '🙂';
+  });
+  const usesImageAssets = visualItems.some((item) => String(item).startsWith('/uploads/'));
+
   return {
     id: `${level.id}-q${index + 1}`,
     prompt: scenario.prompt,
     narration: scenario.prompt,
     choices: scenario.choices,
     answer: scenario.answer,
-    visualType: 'choiceOnly',
+    visualType: 'imageChoices',
+    visualItems,
+    assetKind: usesImageAssets ? 'image' : undefined,
   };
 }
 
@@ -222,13 +360,14 @@ export function getLevels() {
 
 export function createQuestionFromTemplate(template) {
   const payload = template.templatePayload ?? {};
+  const { choices, answer } = normalizeQuestionChoices(template.choices, template.answer);
   const visualItems = payload.visualItems ?? (template.assetImagePath ? [template.assetImagePath] : undefined);
   return {
     id: `template-${template.id}`,
     prompt: template.prompt,
     narration: template.narration,
-    choices: template.choices,
-    answer: template.answer,
+    choices,
+    answer,
     visualType: template.visualType,
     visualItems,
     visualGroups: payload.visualGroups,
@@ -245,7 +384,7 @@ export function generateQuestions(levelId, count = 5, assets = []) {
   return Array.from({ length: count }, (_, index) => {
     switch (level.lessonType) {
       case 'emotionChoice':
-        return buildEmotionQuestion(level, index);
+        return buildEmotionQuestion(level, index, assets);
       case 'routineOrder':
         return buildRoutineQuestion(level, index);
       case 'socialChoice':

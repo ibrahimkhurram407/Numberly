@@ -17,6 +17,7 @@ export interface UserProfile {
   id: number;
   displayName: string;
   email: string;
+  role: 'admin' | 'user';
   avatarColor: string;
   ageGroup: string;
   totalXp: number;
@@ -91,4 +92,17 @@ export interface LeaderboardEntry {
   streakDays: number;
   avatarColor: string;
   rank: number;
+}
+
+export interface AdminUserRecord {
+  id: number;
+  displayName: string;
+  email: string;
+  role: 'admin' | 'user';
+  ageGroup: string;
+  totalXp: number;
+  streakDays: number;
+  hearts: number;
+  dailyGoal: number;
+  avatarColor: string;
 }
